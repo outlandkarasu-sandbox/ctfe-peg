@@ -1,0 +1,5 @@
+# ignore files list.
+
+# ignore object file.
+*.o
+
