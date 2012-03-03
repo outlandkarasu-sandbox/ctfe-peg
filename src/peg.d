@@ -55,14 +55,53 @@ struct Result(R) {
     Object value;
 
     /// get semantic value.
-    @safe Value!V get(V)() const {
-        return cast(Value!V) value;
+    @safe const(V) get(V)() const {
+        return (cast(const(Value!V))value).value;
     }
 
     /// check value type.
     @safe nothrow bool isValueType(V)() const {
-        return cast(Value!V) value;
+        return cast(const(Value!V)) value;
     }
+}
+
+/**
+ *  AST node type.
+ *
+ *  Params:
+ *      R = source range type.
+ */
+class Node(R) {
+public:
+
+    /// initialize id and children.
+    this(string id, ref const Result!R result, Node!R[] children) {
+        id_ = id;
+        result_ = result;
+        children_ = children;
+    }
+
+    /// return node id.
+    @property @safe nothrow pure string id() const {return id_;}
+
+    /// return result.
+    @property @safe nothrow pure
+    ref const(Result!R) result() const {return result_;}
+
+    /// return children node.
+    @property @safe nothrow pure
+    const(Node!R[]) children() const {return children_;}
+
+private:
+
+    /// node ID.
+    string id_;
+
+    /// matching result.
+    const(Result!R) result_;
+
+    /// children node.
+    const(Node!R[]) children_;
 }
 
 /**
@@ -84,11 +123,12 @@ public:
         R source;
         size_t line;
         size_t position;
+        size_t nodeCount;
     }
 
     /// save current position.
     @property @safe nothrow Position save() const {
-        return Position(source_.save, line_, position_);
+        return Position(source_.save, line_, position_, nodes_.length);
     }
 
     /// restore position.
@@ -96,6 +136,7 @@ public:
         source_ = pos.source;
         line_ = pos.line;
         position_ = pos.position;
+        nodes_.length = pos.nodeCount;
     }
 
     /// return current position.
@@ -118,6 +159,33 @@ public:
         ++position_;
     }
 
+    /// add AST node.
+    @safe void addNode(
+            size_t begin, string id, ref const Result!R result) {
+        if(begin < nodes_.length) {
+            auto node = new Node!R(id, result, nodes_[begin..$].dup);
+            nodes_ = nodes_[0..begin] ~ node;
+        } else {
+            auto node = new Node!R(id, result, null);
+            nodes_ ~= node;
+        }
+    }
+
+    /// ditto
+    @safe void addNodes(Node!R[] nodes) {
+        if(nodes.length > 0) {
+            nodes_ ~= nodes;
+        }
+    }
+
+    /// get AST nodes.
+    @safe Node!R[] getNodes(size_t begin = 0) {
+        return (begin < nodes_.length) ? nodes_[begin..$].dup : null;
+    }
+
+    /// return current node count.
+    @property @safe nothrow size_t nodeCount() const {return nodes_.length;}
+
 private:
 
     /// parsing source.
@@ -128,6 +196,9 @@ private:
 
     /// current position.
     size_t position_ = 0;
+
+    /// nodes.
+    Node!R[] nodes_;
 }
 
 /**
@@ -188,6 +259,7 @@ public:
     @safe Result!R opCall(Context!R ctx) {
         if(auto memo = ctx.position in memo_) {
             ctx.restore(memo.end);
+            ctx.addNodes(memo.nodes);
             return memo.result;
         }
         
@@ -198,7 +270,8 @@ public:
             r.match = parse(ctx, r.value);
             const after = ctx.save;
             r.end = after.source;
-            memo_[before.position] = MemoEntry(r, before, after);
+            auto nodes = ctx.getNodes(before.nodeCount);
+            memo_[before.position] = MemoEntry(r, before, after, nodes);
         } finally {
             // restore if unmatched or throws exception.
             if(!r.match) {
@@ -231,6 +304,7 @@ private:
         Result!R result;
         Context!R.Position begin;
         Context!R.Position end;
+        Node!R[] nodes;
     }
 
     /// memoize data.
@@ -659,27 +733,30 @@ class SequenceParser(R) : NonTerminalArrayParser!R {
     }
 }
 
+/// make sequence parser.
+SequenceParser!R seq(R)(Parser!R[] parsers ...) {
+    return new SequenceParser!R(parsers);
+}
+
 static assert(static_test!({
-    auto src = "test";
+    auto src = "tets";
     alias typeof(src) Range;
 
     auto c = makeContext(src);
-    auto p = new SequenceParser!Range(
-        new CharParser!(Range, 't'),
-        new CharParser!(Range, 'e'));
+    auto p = seq(new CharParser!(Range, 't'), new CharParser!(Range, 'e'));
 
     auto r = p(c);
     assert(r.match);
     assert(r.begin == src);
     assert(r.end == src[2..$]);
     assert(c.position == 2);
-    assert(c.front == 's');
+    assert(c.front == 't');
 
     r = p(c);
     assert(!r.match);
     assert(c.position == 2);
 }));
-
+	
 /// orderd choice parser.
 class ChoiceParser(R) : NonTerminalArrayParser!R {
 
@@ -697,14 +774,17 @@ class ChoiceParser(R) : NonTerminalArrayParser!R {
     }
 }
 
+/// make sequence parser.
+ChoiceParser!R choice(R)(Parser!R[] parsers ...) {
+    return new ChoiceParser!R(parsers);
+}
+
 static assert(static_test!({
     auto src = "test";
     alias typeof(src) Range;
 
     auto c = makeContext(src);
-    auto p = new ChoiceParser!Range(
-        new CharParser!(Range, 't'),
-        new CharParser!(Range, 'e'));
+    auto p = choice(new CharParser!(Range, 't'), new CharParser!(Range, 'e'));
 
     auto r = p(c);
     assert(r.match);
@@ -774,6 +854,431 @@ static assert(static_test!({
     assert(!r.match);
     assert(c.position == 4);
     assert(c.empty);
+}));
+
+/// node parser.
+class NodeParser(R, alias ID) : NonTerminalParser!R {
+    /// initialize with inner parser.
+    public @safe this(Parser!R parser) {super(parser);}
+
+    // parse implements.
+    protected @safe bool parse(Context!R ctx, out Object value) {
+        auto cnt = ctx.nodeCount;
+        auto r = parser()(ctx);
+        if(r.match) {
+            ctx.addNode(cnt, ID, r);
+        }
+        return r.match;
+    }
+}
+
+static assert(static_test!({
+    auto src = "test";
+    alias typeof(src) Range;
+
+    auto c = makeContext(src);
+    auto p = new NodeParser!(Range, "TEST_ID")(new AnyCharParser!Range);
+
+    auto r = p(c);
+    assert(c.position == 1);
+    assert(c.front == 'e');
+    assert(r.match);
+    assert(r.begin == src);
+    assert(r.end == src[1 .. $]);
+
+    auto nodes = c.getNodes();
+    assert(nodes.length == 1);
+    assert(nodes[0].id == "TEST_ID");
+    assert(nodes[0].result == r);
+}));
+
+static assert(static_test!({
+    auto src = "test";
+    alias typeof(src) Range;
+
+    auto c = makeContext(src);
+    auto makeParser = {return new NodeParser!(Range, "TEST_ID")(seq(
+        new NodeParser!(Range, "TEST_ID1")(new AnyCharParser!Range),
+        new NodeParser!(Range, "TEST_ID2")(new AnyCharParser!Range),
+        new NodeParser!(Range, "TEST_ID3")(new AnyCharParser!Range)
+    ));};
+    auto p = makeParser();
+
+    auto r = p(c);
+    assert(c.position == 3);
+    assert(c.front == 't');
+    assert(r.match);
+    assert(r.begin == src);
+    assert(r.end == src[3 .. $]);
+
+    auto nodes = c.getNodes();
+    assert(nodes.length == 1);
+    assert(nodes[0].id == "TEST_ID");
+    assert(nodes[0].result == r);
+
+    auto children = nodes[0].children;
+    assert(children.length == 3);
+    assert(children[0].id == "TEST_ID1");
+    assert(children[1].id == "TEST_ID2");
+    assert(children[2].id == "TEST_ID3");
+
+    c = makeContext("teste");
+    p = makeParser();
+    r = p(c);
+    assert(r.match);
+
+    r = p(c);
+    assert(c.nodeCount == 1);
+}));
+
+/// hex character to uint.
+private @safe pure nothrow uint hex2uint(dchar c) {
+    switch(c) {
+    case '0': .. case '9':
+        return c - '0';
+    case 'a': .. case 'f':
+        return 10 + (c - 'a');
+    case 'A': .. case 'F':
+        return 10 + (c - 'A');
+    default:
+        assert(false, "not hex char.");
+        return 0;
+    }
+}
+
+/// check a char.
+private @safe bool checkChar(R)(R ctx, dchar c) {
+    return !ctx.empty && ctx.front == c;
+}
+
+/**
+ *  read a char literal from source.
+ *  it can read a single char or escape sequence.
+ *
+ *  Params:
+ *      R = source range type.
+ *      ctx = source context.
+ *      c = output char.
+ *  Returns:
+ *      true if succeeded read a char.
+ */
+private @safe bool parsePegCharLiteral(R)(R ctx, out dchar c) {
+    if(ctx.empty) {
+        return false;
+    }
+
+    immutable c1 = ctx.front;
+    ctx.popFront();
+    if(c1 == '\\') {
+        // read escape sequence.
+        if(ctx.empty) {
+            return false;
+        }
+        immutable c2 = ctx.front;
+        switch(c2) {
+        case '\'': c = '\''; ctx.popFront(); break;
+        case '\"': c = '\"'; ctx.popFront(); break;
+        case '\?': c = '\?'; ctx.popFront(); break;
+        case '\\': c = '\\'; ctx.popFront(); break;
+        case 'a': c = '\a'; ctx.popFront(); break;
+        case 'b': c = '\b'; ctx.popFront(); break;
+        case 'f': c = '\f'; ctx.popFront(); break;
+        case 'n': c = '\n'; ctx.popFront(); break;
+        case 'r': c = '\r'; ctx.popFront(); break;
+        case 't': c = '\t'; ctx.popFront(); break;
+        case 'v': c = '\v'; ctx.popFront(); break;
+        case '0': .. case '7':
+            c = '\0';
+            do {
+                c <<= 3;
+                c |= ctx.front - '0';
+                ctx.popFront();
+            } while(!ctx.empty && ('0' <= ctx.front && ctx.front <= '7'));
+            break;
+        case 'x', 'X': {
+            ctx.popFront();
+
+            if(ctx.empty) {
+                return false;
+            }
+            auto x1 = ctx.front;
+            ctx.popFront();
+
+            if(ctx.empty) {
+                return false;
+            }
+            auto x2 = ctx.front;
+            ctx.popFront();
+
+            c = cast(char)((hex2uint(x1) << 4) | hex2uint(x2));
+            break;
+        }
+        default:
+            break;
+        }
+    } else {
+        // read normal character.
+        switch(c1) {
+        case '\r', '\n', '\0':
+            // abnormal character.
+            return false;
+        default:
+            c = c1;
+            break;
+        }
+    }
+    return true;
+}
+
+static assert(static_test!({
+    void testCharLiteral(string s, dchar c) {
+        auto ctx = makeContext(s);
+        dchar ch;
+        assert(parsePegCharLiteral(ctx, ch));
+        assert(c == ch);
+        assert(ctx.empty);
+    }
+
+    void testNotCharLiteral(string s) {
+        auto ctx = makeContext(s);
+        dchar ch;
+        assert(!parsePegCharLiteral(ctx, ch));
+    }
+
+    testCharLiteral("t", 't');
+    testCharLiteral("\\t", '\t');
+    testCharLiteral("\\\'", '\'');
+    testCharLiteral("\\\"", '\"');
+    testCharLiteral("\\\?", '\?');
+    testCharLiteral("\\\\", '\\');
+    testCharLiteral("\\a", '\a');
+    testCharLiteral("\\b", '\b');
+    testCharLiteral("\\f", '\f');
+    testCharLiteral("\\n", '\n');
+    testCharLiteral("\\r", '\r');
+    testCharLiteral("\\t", '\t');
+    testCharLiteral("\\v", '\v');
+    testCharLiteral("\\0", '\0');
+    testCharLiteral("\\123", '\123');
+    testCharLiteral("\\x00", '\x00');
+    testCharLiteral("\\xFF", '\xFF');
+    testCharLiteral("\\xaa", '\xaa');
+
+    testNotCharLiteral("\r");
+    testNotCharLiteral("\n");
+    testNotCharLiteral("\0");
+}));
+
+/// character literal parser
+class PegCharLiteralParser(R) : Parser!R {
+    // parse implements.
+    protected @safe bool parse(Context!R ctx, out Object value) {
+        if(!checkChar(ctx, '\'')) {
+            return false;
+        }
+        ctx.popFront();
+
+        if(checkChar(ctx, '\'')) {
+            return false;
+        }
+
+        dchar c;
+        if(!parsePegCharLiteral(ctx, c)) {
+            return false;
+        }
+
+        if(!checkChar(ctx, '\'')) {
+            return false;
+        }
+        ctx.popFront();
+
+        value = new Value!dchar(c);
+        return true;
+    }
+}
+
+static assert(static_test!({
+    void testPegCharLiteral(string s, dchar c) {
+        auto ctx = makeContext(s);
+        auto p = new PegCharLiteralParser!string;
+        auto r = p(ctx);
+        assert(r.match);
+        assert(r.begin == s);
+        assert(r.get!(dchar)() == c);
+        assert(ctx.empty);
+    }
+
+    void testNotPegCharLiteral(string s) {
+        auto ctx = makeContext(s);
+        auto p = new PegCharLiteralParser!string;
+        auto r = p(ctx);
+        assert(!r.match);
+        assert(r.value is null);
+        assert(ctx.position == 0);
+    }
+
+    testPegCharLiteral("'a'", 'a');
+    testPegCharLiteral("'\\a'", '\a');
+    testPegCharLiteral("'\\0'", '\0');
+    testPegCharLiteral("'\\x12'", '\x12');
+    testPegCharLiteral("'\\xFf'", '\xFF');
+
+    testNotPegCharLiteral("\"a\"");
+    testNotPegCharLiteral("a'");
+    testNotPegCharLiteral("'a");
+    testNotPegCharLiteral("''");
+}));
+
+/// string literal parser
+class PegStringLiteralParser(R) : Parser!R {
+    // parse implements.
+    protected @safe bool parse(Context!R ctx, out Object value) {
+        if(ctx.empty || ctx.front != '\"') {
+            return false;
+        }
+        ctx.popFront();
+
+        string buf;
+        for(dchar c;
+                !ctx.empty &&
+                ctx.front != '\"' &&
+                parsePegCharLiteral(ctx, c);) {
+
+            // if c is 1 byte character, put single byte char into buffer.
+            // (not extend multi bytes)
+            // buf c is over 1 byte range,
+            // put multi bytes char into buffer.
+            if(c <= 0xFFU) {
+                buf ~= cast(char) c;
+            } else {
+                buf ~= c;
+            }
+        }
+
+        if(ctx.empty || ctx.front != '\"') {
+            return false;
+        }
+        ctx.popFront();
+
+        value = new Value!string(buf);
+        return true;
+    }
+}
+
+static assert(static_test!({
+    void testPegStringLiteral(string s, string ex) {
+        auto ctx = makeContext(s);
+        auto p = new PegStringLiteralParser!string;
+        auto r = p(ctx);
+        assert(r.match);
+        assert(r.begin == s);
+        assert(r.get!string().length == ex.length, r.get!string());
+        assert(r.get!string() == ex, r.get!string());
+        assert(ctx.empty);
+    }
+
+    void testNotPegStringLiteral(string s) {
+        auto ctx = makeContext(s);
+        auto p = new PegStringLiteralParser!string;
+        auto r = p(ctx);
+        assert(!r.match);
+        assert(r.value is null);
+        assert(ctx.position == 0);
+    }
+
+    testPegStringLiteral(q{"test"}, "test");
+    testPegStringLiteral(q{"\"\""}, "\"\"");
+    testPegStringLiteral(q{"\""}, "\"");
+    testPegStringLiteral(q{"\0\0"}, "\0\0");
+    testPegStringLiteral(q{"あいう"}, "あいう");
+    testPegStringLiteral(q{"\xFF\xaa"}, "\xFF\xAA");
+    testPegStringLiteral(q{"01234"}, "01234");
+
+    testNotPegStringLiteral("\"test");
+    testNotPegStringLiteral("'test'");
+    testNotPegStringLiteral("test\"");
+    testNotPegStringLiteral("\"");
+}));
+
+/// parse identifier head char.
+private @safe bool checkPegIdentifierHead(R)(R ctx) {
+    if(ctx.empty) {
+        return false;
+    }
+    switch(ctx.front) {
+    case 'a': .. case 'z':
+    case 'A': .. case 'Z':
+    case '_':
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// parse identifier tail char.
+private @safe bool checkPegIdentifierTail(R)(R ctx) {
+    if(ctx.empty) {
+        return false;
+    }
+    switch(ctx.front) {
+    case '0': .. case '9':
+    case 'a': .. case 'z':
+    case 'A': .. case 'Z':
+    case '_':
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// PEG identifier parser
+class PegIdentifierParser(R) : Parser!R {
+    // parse implements.
+    protected @safe bool parse(Context!R ctx, out Object value) {
+        if(!checkPegIdentifierHead(ctx)) {
+            return false;
+        }
+
+        string buf;
+        buf ~= ctx.front;
+        ctx.popFront();
+
+        for(;checkPegIdentifierTail(ctx);
+                buf ~= ctx.front, ctx.popFront()) {}
+        value = new Value!string(buf);
+        return true;
+    }
+}
+
+static assert(static_test!({
+    void testPegIdentifier(string s, string ex) {
+        auto ctx = makeContext(s);
+        auto p = new PegIdentifierParser!string;
+        auto r = p(ctx);
+        assert(r.match);
+        assert(r.begin == s);
+        assert(r.get!string().length == ex.length, r.get!string());
+        assert(r.get!string() == ex, r.get!string());
+        assert(ctx.empty);
+    }
+
+    void testNotPegIdentifier(string s) {
+        auto ctx = makeContext(s);
+        auto p = new PegIdentifierParser!string;
+        auto r = p(ctx);
+        assert(!r.match);
+        assert(r.value is null);
+        assert(ctx.position == 0);
+    }
+
+    testPegIdentifier("test", "test");
+    testPegIdentifier("test1234", "test1234");
+    testPegIdentifier("t123", "t123");
+    testPegIdentifier("t", "t");
+
+    testNotPegIdentifier("");
+    testNotPegIdentifier("1");
+    testNotPegIdentifier("1test");
 }));
 
 /// main function.
