@@ -3,3 +3,6 @@
 # ignore object file.
 *.o
 
+# ignore test module.
+src/peg
+
