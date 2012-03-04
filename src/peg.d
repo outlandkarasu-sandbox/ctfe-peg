@@ -12,6 +12,7 @@
 module peg;
 
 import std.stdio;
+import std.conv;
 import std.range;
 import std.traits;
 
@@ -132,11 +133,33 @@ public:
     }
 
     /// restore position.
-    @safe nothrow void restore(ref const Position pos) {
+    @safe nothrow void restore(ref const Position pos)
+    in {
+        assert(pos.line <= line_);
+        assert(pos.position <= position_);
+        assert(pos.nodeCount <= nodes_.length);
+    } body {
         source_ = pos.source;
         line_ = pos.line;
         position_ = pos.position;
         nodes_.length = pos.nodeCount;
+    }
+
+    /// forward position. for memoize implementation.
+    @safe nothrow void forward(ref const Position pos, Node!R[] nodes)
+    in {
+        assert(pos.line >= line_);
+        assert(pos.position >= position_);
+        assert(pos.nodeCount >= nodes_.length);
+    } out {
+        assert(pos.line == line_);
+        assert(pos.position == position_);
+        assert(pos.nodeCount == nodes_.length);
+    } body {
+        source_ = pos.source;
+        line_ = pos.line;
+        position_ = pos.position;
+        nodes_ ~= nodes;
     }
 
     /// return current position.
@@ -168,13 +191,6 @@ public:
         } else {
             auto node = new Node!R(id, result, null);
             nodes_ ~= node;
-        }
-    }
-
-    /// ditto
-    @safe void addNodes(Node!R[] nodes) {
-        if(nodes.length > 0) {
-            nodes_ ~= nodes;
         }
     }
 
@@ -237,6 +253,14 @@ static assert(static_test!({
     assert(c.position == 0);
     assert(c.line == 1);
     assert(c.front == 't');
+
+    c.addNode(0, "TEST", Result!string.init);
+    assert(c.nodeCount == 1);
+    auto pos2 = c.save;
+    c.addNode(1, "TEST", Result!string.init);
+    assert(c.nodeCount == 2);
+    c.restore(pos2);
+    assert(c.nodeCount == 1);
 }));
 
 /**
@@ -258,8 +282,7 @@ public:
      */
     @safe Result!R opCall(Context!R ctx) {
         if(auto memo = ctx.position in memo_) {
-            ctx.restore(memo.end);
-            ctx.addNodes(memo.nodes);
+            ctx.forward(memo.end, memo.nodes);
             return memo.result;
         }
         
@@ -630,6 +653,45 @@ static assert(static_test!({
     assert(r.match);
     assert(c.position == 1);
     assert(!c.empty);
+}));
+
+/// option parser. (zero or one)
+class OptionParser(R) : NonTerminalParser!R {
+    /// initialize with inner parser.
+    public @safe nothrow this(Parser!R parser) {super(parser);}
+
+    // parse implements.
+    protected @safe bool parse(Context!R ctx, out Object value) {
+        parser()(ctx);
+        return true;
+    }
+}
+
+/// make option parser.
+@safe nothrow auto opt(R)(Parser!R p) {
+    return new OptionParser!R(p);
+}
+
+static assert(static_test!({
+    alias string Range;
+    auto c = makeContext("test");
+    auto p = opt(new CharParser!(Range, 't'));
+
+    auto r = p(c);
+    assert(r.match);
+    assert(c.position == 1);
+
+    r = p(c);
+    assert(r.match);
+    assert(c.position == 1);
+
+    c.popFront();
+    c.popFront();
+    c.popFront();
+
+    r = p(c);
+    assert(r.match);
+    assert(c.empty);
 }));
 
 /// repeat zero or more.
@@ -1467,29 +1529,29 @@ enum PegNodeId : string {
 
 /// make PEG atomic expressions parser.
 @safe nothrow Parser!R pegAtomicExpression(R)(Parser!R spaces) {
-    auto id = seq(spaces, pegIdentifier!R());
-    auto ch = seq(spaces, pegCharLiteral!R());
-    auto str = seq(spaces, pegStringLiteral!R());
-    auto any = seq(spaces, new CharParser!(R, '.'));
+    auto id = pegIdentifier!R();
+    auto ch = pegCharLiteral!R();
+    auto str = pegStringLiteral!R();
+    auto any = new CharParser!(R, '.');
     
-    auto lb = seq(spaces, new CharParser!(R, '['));
-    auto rb = seq(spaces, new CharParser!(R, ']'));
-    auto dotdot = seq(spaces, new StringParser!(R, ".."));
+    auto lb = new CharParser!(R, '[');
+    auto rb = new CharParser!(R, ']');
+    auto dotdot = new StringParser!(R, "..");
 
     auto range = node!(PegNodeId.Range)(
-        seq(lb, ch, dotdot, ch, rb)
+        seq(lb, spaces, ch, spaces, dotdot, spaces, ch, spaces, rb)
     );
 
     auto set = node!(PegNodeId.Set)(
-        seq(lb, str, rb)
+        seq(lb, spaces, str, spaces, rb)
     );
 
     return choice(id, ch, str, range, set, any);
 }
 
 static assert(static_test!({
-    void testAtomExp(string s, PegNodeId node) {
-        auto p = pegAtomicExpression!string(pegSpaces!string());
+    void testAtomExp(string s, string node) {
+        auto p = pegAtomicExpression(pegSpaces!string());
         auto c = makeContext(s);
         auto r = p(c);
         assert(r.match);
@@ -1500,7 +1562,7 @@ static assert(static_test!({
     }
 
     void testNotAtomExp(string s) {
-        auto p = pegAtomicExpression!string(pegSpaces!string());
+        auto p = pegAtomicExpression(pegSpaces!string());
         auto c = makeContext(s);
         auto r = p(c);
         assert(!r.match);
@@ -1509,19 +1571,83 @@ static assert(static_test!({
         assert(nodes.length == 0);
     }
 
-    testAtomExp(q{    'a'}, PegNodeId.Char);
-    testAtomExp(q{ a}, PegNodeId.Id);
+    testAtomExp(q{'a'}, PegNodeId.Char);
+    testAtomExp(q{a}, PegNodeId.Id);
     testAtomExp(q{"test"}, PegNodeId.String);
-    testAtomExp(q{ [ 'a' .. 'b'  ]}, PegNodeId.Range);
-    testAtomExp(q{ [ "test " ]}, PegNodeId.Set);
+    testAtomExp(q{[ 'a' .. 'b'  ]}, PegNodeId.Range);
+    testAtomExp(q{[ "test " ]}, PegNodeId.Set);
 
-    testNotAtomExp(q{ });
+    testNotAtomExp(q{ a});
     testNotAtomExp(q{ 123});
     testNotAtomExp(q{[ 'a']});
     testNotAtomExp(q{[ 'a' ..]});
     testNotAtomExp(q{[ 'a'..'b'});
     testNotAtomExp(q{[ "stra"});
     testNotAtomExp("'a");
+}));
+
+/// make PEG unary expression.
+@safe nothrow Parser!R pegUnaryExpression(R)(Parser!R spaces) {
+    auto atom = pegAtomicExpression(spaces);
+
+    auto optOp = new CharParser!(R, '?');
+    auto more0Op = new CharParser!(R, '*');
+    auto more1Op = new CharParser!(R, '+');
+
+    auto opt = node!(PegNodeId.Option)(seq(atom, spaces, optOp));
+    auto more0 = node!(PegNodeId.More0)(seq(atom, spaces, more0Op));
+    auto more1 = node!(PegNodeId.More1)(seq(atom, spaces, more1Op));
+
+    return choice(opt, more0, more1, atom);
+}
+
+static assert(static_test!({
+    void testPegUnary(string s, string node) {
+        auto c = makeContext(s);
+        auto p = pegUnaryExpression(pegSpaces!string());
+        auto r = p(c);
+        assert(r.match);
+        auto nodes = c.getNodes();
+        assert(nodes.length == 1);
+        assert(nodes[0].id == node, nodes[0].id);
+    }
+
+    auto nodep = node!("TEST")(new CharParser!(string, 'a'));
+    auto p = choice(
+        seq(nodep, new CharParser!(string, 'b')),
+        nodep
+    );
+
+    testPegUnary(q{"test"}, PegNodeId.String);
+}));
+
+// for memoize bug test.
+static assert(static_test!({
+    auto nodep = node!("TEST")(new CharParser!(string, 'a'));
+
+    auto c = makeContext("a");
+    auto r = nodep(c);
+    auto nodes = c.getNodes();
+    assert(r.match);
+    assert(nodes.length == 1);
+    assert(nodes[0].id == "TEST");
+
+    auto m = nodep.memo_[0];
+    assert(m.result.match);
+    assert(m.nodes.length == 1);
+    assert(m.nodes[0].id == "TEST");
+
+    assert(c.nodeCount == 1);
+    c.restore(m.begin);
+    assert(c.nodeCount == 0);
+    assert(c.position == 0);
+
+    r = nodep(c);
+    assert(c.nodeCount == 1, text(c.nodeCount));
+    nodes = c.getNodes();
+    assert(r.match);
+    assert(nodes.length == 1);
+    assert(nodes[0].id == "TEST");
 }));
 
 /// main function.
