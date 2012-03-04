@@ -566,12 +566,17 @@ class AndPredParser(R) : NonTerminalParser!R {
     }
 }
 
+/// make AND predicator.
+@safe nothrow auto andPred(R)(Parser!R p) {
+    return new AndPredParser!R(p);
+}
+
 static assert(static_test!({
     auto src = "test";
     alias typeof(src) Range;
 
     auto c = makeContext(src);
-    auto p = new AndPredParser!Range(new CharParser!(Range, 't'));
+    auto p = andPred(new CharParser!(Range, 't'));
 
     auto r = p(c);
     assert(r.match);
@@ -601,12 +606,17 @@ class NotPredParser(R) : NonTerminalParser!R {
     }
 }
 
+/// make NOT predicator.
+@safe auto notPred(R)(Parser!R p) {
+    return new NotPredParser!R(p);
+}
+
 static assert(static_test!({
     auto src = "test";
     alias typeof(src) Range;
 
     auto c = makeContext(src);
-    auto p = new NotPredParser!Range(new CharParser!(Range, 't'));
+    auto p = notPred(new CharParser!(Range, 't'));
 
     auto r = p(c);
     assert(!r.match);
@@ -635,12 +645,17 @@ class ZeroOrMoreRepeatParser(R) : NonTerminalParser!R {
     }
 }
 
+/// make zero or more parser.
+@safe nothrow auto more0(R)(Parser!R p) {
+    return new ZeroOrMoreRepeatParser!R(p);
+}
+
 static assert(static_test!({
     auto src = "ttst";
     alias typeof(src) Range;
 
     auto c = makeContext(src);
-    auto p = new ZeroOrMoreRepeatParser!Range(new CharParser!(Range, 't'));
+    auto p = more0(new CharParser!(Range, 't'));
 
     auto r = p(c);
     assert(r.match);
@@ -675,12 +690,17 @@ class OneOrMoreRepeatParser(R) : NonTerminalParser!R {
     }
 }
 
+/// make one or more parser.
+@safe nothrow auto more1(R)(Parser!R p) {
+    return new OneOrMoreRepeatParser!R(p);
+}
+
 static assert(static_test!({
     auto src = "ttst";
     alias typeof(src) Range;
 
     auto c = makeContext(src);
-    auto p = new OneOrMoreRepeatParser!Range(new CharParser!(Range, 't'));
+    auto p = more1(new CharParser!(Range, 't'));
 
     auto r = p(c);
     assert(r.match);
@@ -734,7 +754,7 @@ class SequenceParser(R) : NonTerminalArrayParser!R {
 }
 
 /// make sequence parser.
-SequenceParser!R seq(R)(Parser!R[] parsers ...) {
+@safe nothrow auto seq(R)(Parser!R[] parsers ...) {
     return new SequenceParser!R(parsers);
 }
 
@@ -775,7 +795,7 @@ class ChoiceParser(R) : NonTerminalArrayParser!R {
 }
 
 /// make sequence parser.
-ChoiceParser!R choice(R)(Parser!R[] parsers ...) {
+@safe nothrow auto choice(R)(Parser!R[] parsers ...) {
     return new ChoiceParser!R(parsers);
 }
 
@@ -859,7 +879,7 @@ static assert(static_test!({
 /// node parser.
 class NodeParser(R, alias ID) : NonTerminalParser!R {
     /// initialize with inner parser.
-    public @safe this(Parser!R parser) {super(parser);}
+    public @safe nothrow this(Parser!R parser) {super(parser);}
 
     // parse implements.
     protected @safe bool parse(Context!R ctx, out Object value) {
@@ -872,12 +892,17 @@ class NodeParser(R, alias ID) : NonTerminalParser!R {
     }
 }
 
+/// make AST node parser.
+@safe nothrow auto node(alias ID, R)(Parser!R p) {
+    return new NodeParser!(R, ID)(p);
+}
+
 static assert(static_test!({
     auto src = "test";
     alias typeof(src) Range;
 
     auto c = makeContext(src);
-    auto p = new NodeParser!(Range, "TEST_ID")(new AnyCharParser!Range);
+    auto p = node!("TEST_ID")(new AnyCharParser!Range);
 
     auto r = p(c);
     assert(c.position == 1);
@@ -897,10 +922,10 @@ static assert(static_test!({
     alias typeof(src) Range;
 
     auto c = makeContext(src);
-    auto makeParser = {return new NodeParser!(Range, "TEST_ID")(seq(
-        new NodeParser!(Range, "TEST_ID1")(new AnyCharParser!Range),
-        new NodeParser!(Range, "TEST_ID2")(new AnyCharParser!Range),
-        new NodeParser!(Range, "TEST_ID3")(new AnyCharParser!Range)
+    auto makeParser = {return node!("TEST_ID")(seq(
+        node!("TEST_ID1")(new AnyCharParser!Range),
+        node!("TEST_ID2")(new AnyCharParser!Range),
+        node!("TEST_ID3")(new AnyCharParser!Range)
     ));};
     auto p = makeParser();
 
@@ -1279,6 +1304,224 @@ static assert(static_test!({
     testNotPegIdentifier("");
     testNotPegIdentifier("1");
     testNotPegIdentifier("1test");
+}));
+
+/// PEG new line parser.
+class PegNewLineParser(R) : Parser!R {
+    // parse implements.
+    protected @safe bool parse(Context!R ctx, out Object value) {
+        if(ctx.empty) {
+            return false;
+        }
+
+        switch(ctx.front) {
+        case '\n':
+            ctx.popFront();
+            ctx.addLine();
+            return true;
+        case '\r':
+            ctx.popFront();
+            if(!ctx.empty() && ctx.front == '\n') {
+                ctx.popFront();
+            }
+            ctx.addLine();
+            return true;
+        default:
+            break;
+        }
+        return false;
+    }
+}
+
+static assert(static_test!({
+    void testPegNewLine(string s) {
+        auto c = makeContext(s);
+        auto p = new PegNewLineParser!string;
+        auto r = p(c);
+        assert(r.match);
+        assert(c.line == 2);
+        assert(c.empty);
+    }
+
+    void testNotPegNewLine(string s) {
+        auto c = makeContext(s);
+        auto p = new PegNewLineParser!string;
+        auto r = p(c);
+        assert(!r.match);
+        assert(c.line == 1);
+        assert(c.position == 0);
+    }
+
+    testPegNewLine("\n");
+    testPegNewLine("\r");
+    testPegNewLine("\r\n");
+
+    testNotPegNewLine("\0");
+    testNotPegNewLine("test");
+}));
+
+/// make PEG spaces parser.
+@safe nothrow Parser!R pegSpaces(R)() {
+    auto commentBegin = new StringParser!(R, "/*");
+    auto commentEnd = new StringParser!(R, "*/");
+    auto anyChar = new AnyCharParser!R;
+    auto newLine = new PegNewLineParser!R;
+
+    auto blockComment = new RuleParser!R;
+    blockComment.parser = seq(
+        commentBegin,
+        more0(choice(
+            seq(notPred(commentEnd), notPred(commentBegin), anyChar),
+            blockComment
+        )),
+        commentEnd
+    );
+
+    auto lineComment = seq(
+        new StringParser!(R, "//"),
+        more0(seq(notPred(newLine), anyChar)),
+        choice(newLine, new EndParser!R)
+    );
+
+    return more0(choice(
+        new CharSetParser!(R, " \t\v\f"),
+        newLine,
+        blockComment,
+        lineComment
+    ));
+}
+
+static assert(static_test!({
+    void testPegSpaces(string s) {
+        auto p = pegSpaces!string();
+        auto c = makeContext(s);
+        auto r = p(c);
+
+        assert(r.match);
+        assert(c.empty);
+    }
+
+    void testNotPegSpaces(string s) {
+        auto p = pegSpaces!string();
+        auto c = makeContext(s);
+        auto r = p(c);
+
+        assert(r.match);
+        assert(c.position == 0);
+        assert(c.line == 1);
+    }
+
+    testPegSpaces(" ");
+    testPegSpaces("    ");
+    testPegSpaces("\t\v\f ");
+    testPegSpaces("\r\n\n\r");
+    testPegSpaces("//test");
+    testPegSpaces("//test\r\n");
+    testPegSpaces("  //test\n  ");
+    testPegSpaces("/*test*/");
+    testPegSpaces("/*t/*es*/t*/");
+
+    testNotPegSpaces("a  ");
+    testNotPegSpaces("/*test");
+    testNotPegSpaces("/");
+    testNotPegSpaces("/*te/**/");
+}));
+
+enum PegNodeId : string {
+    None = "",
+
+    // atomic expressions.
+    Id = "PEG_ID",
+    Char = "PEG_CHAR",
+    String = "PEG_STRING",
+    Range = "PEG_RANGE",
+    Set = "PEG_SET",
+    Any = "PEG_ANY",
+
+    // compound expressions.
+    And = "PEG_AND_PRED",
+    Not = "PEG_NOT_PRED",
+
+    Option = "PEG_OPTION",
+    More0 = "PEG_ZERO_OR_MORE",
+    More1 = "PEG_ONE_OR_MORE",
+
+    Sequence = "PEG_SEQUENCE",
+    Choice = "PEG_CHOICE"
+}
+
+/// make PEG identifier parser.
+@safe nothrow Parser!R pegIdentifier(R)() {
+    return node!(PegNodeId.Id)(new PegIdentifierParser!R);
+}
+
+/// make PEG char literal parser.
+@safe nothrow Parser!R pegCharLiteral(R)() {
+    return node!(PegNodeId.Char)(new PegCharLiteralParser!R);
+}
+
+/// make PEG string literal parser.
+@safe nothrow Parser!R pegStringLiteral(R)() {
+    return node!(PegNodeId.String)(new PegStringLiteralParser!R);
+}
+
+/// make PEG atomic expressions parser.
+@safe nothrow Parser!R pegAtomicExpression(R)(Parser!R spaces) {
+    auto id = seq(spaces, pegIdentifier!R());
+    auto ch = seq(spaces, pegCharLiteral!R());
+    auto str = seq(spaces, pegStringLiteral!R());
+    auto any = seq(spaces, new CharParser!(R, '.'));
+    
+    auto lb = seq(spaces, new CharParser!(R, '['));
+    auto rb = seq(spaces, new CharParser!(R, ']'));
+    auto dotdot = seq(spaces, new StringParser!(R, ".."));
+
+    auto range = node!(PegNodeId.Range)(
+        seq(lb, ch, dotdot, ch, rb)
+    );
+
+    auto set = node!(PegNodeId.Set)(
+        seq(lb, str, rb)
+    );
+
+    return choice(id, ch, str, range, set, any);
+}
+
+static assert(static_test!({
+    void testAtomExp(string s, PegNodeId node) {
+        auto p = pegAtomicExpression!string(pegSpaces!string());
+        auto c = makeContext(s);
+        auto r = p(c);
+        assert(r.match);
+        assert(c.empty);
+        auto nodes = c.getNodes();
+        assert(nodes.length == 1);
+        assert(nodes[0].id == node, nodes[0].id);
+    }
+
+    void testNotAtomExp(string s) {
+        auto p = pegAtomicExpression!string(pegSpaces!string());
+        auto c = makeContext(s);
+        auto r = p(c);
+        assert(!r.match);
+        assert(c.position == 0);
+        auto nodes = c.getNodes();
+        assert(nodes.length == 0);
+    }
+
+    testAtomExp(q{    'a'}, PegNodeId.Char);
+    testAtomExp(q{ a}, PegNodeId.Id);
+    testAtomExp(q{"test"}, PegNodeId.String);
+    testAtomExp(q{ [ 'a' .. 'b'  ]}, PegNodeId.Range);
+    testAtomExp(q{ [ "test " ]}, PegNodeId.Set);
+
+    testNotAtomExp(q{ });
+    testNotAtomExp(q{ 123});
+    testNotAtomExp(q{[ 'a']});
+    testNotAtomExp(q{[ 'a' ..]});
+    testNotAtomExp(q{[ 'a'..'b'});
+    testNotAtomExp(q{[ "stra"});
+    testNotAtomExp("'a");
 }));
 
 /// main function.
