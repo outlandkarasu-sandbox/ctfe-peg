@@ -1532,7 +1532,7 @@ enum PegNodeId : string {
     auto id = pegIdentifier!R();
     auto ch = pegCharLiteral!R();
     auto str = pegStringLiteral!R();
-    auto any = new CharParser!(R, '.');
+    auto any = node!(PegNodeId.Any)(new CharParser!(R, '.'));
     
     auto lb = new CharParser!(R, '[');
     auto rb = new CharParser!(R, ']');
@@ -1576,6 +1576,7 @@ static assert(static_test!({
     testAtomExp(q{"test"}, PegNodeId.String);
     testAtomExp(q{[ 'a' .. 'b'  ]}, PegNodeId.Range);
     testAtomExp(q{[ "test " ]}, PegNodeId.Set);
+    testAtomExp(".", PegNodeId.Any);
 
     testNotAtomExp(q{ a});
     testNotAtomExp(q{ 123});
@@ -1602,7 +1603,7 @@ static assert(static_test!({
 }
 
 static assert(static_test!({
-    void testPegUnary(string s, string node) {
+    void testPegUnary(string s, string node, string child = PegNodeId.None) {
         auto c = makeContext(s);
         auto p = pegUnaryExpression(pegSpaces!string());
         auto r = p(c);
@@ -1610,6 +1611,11 @@ static assert(static_test!({
         auto nodes = c.getNodes();
         assert(nodes.length == 1);
         assert(nodes[0].id == node, nodes[0].id);
+
+        if(child != PegNodeId.None.idup) {
+            assert(nodes[0].children.length == 1);
+            assert(nodes[0].children[0].id == child);
+        }
     }
 
     auto nodep = node!("TEST")(new CharParser!(string, 'a'));
@@ -1619,6 +1625,9 @@ static assert(static_test!({
     );
 
     testPegUnary(q{"test"}, PegNodeId.String);
+    testPegUnary(q{'t' ?}, PegNodeId.Option, PegNodeId.Char);
+    testPegUnary(q{["test"]*}, PegNodeId.More0, PegNodeId.Set);
+    testPegUnary(q{['t' .. 's']+}, PegNodeId.More1);
 }));
 
 // for memoize bug test.
@@ -1648,6 +1657,49 @@ static assert(static_test!({
     assert(r.match);
     assert(nodes.length == 1);
     assert(nodes[0].id == "TEST");
+}));
+
+/// make PEG prefix expressions.
+@safe nothrow Parser!R pegPrefixExpression(R)(Parser!R spaces) {
+    auto unary = pegUnaryExpression(spaces);
+
+    auto andOp = new CharParser!(R, '&');
+    auto notOp = new CharParser!(R, '!');
+
+    auto and = node!(PegNodeId.And)(seq(andOp, spaces, unary));
+    auto not = node!(PegNodeId.Not)(seq(notOp, spaces, unary));
+
+    return choice(and, not, unary);
+}
+
+static assert(static_test!({
+    void testPegPrefix(string s, string node, string child = PegNodeId.None) {
+        auto c = makeContext(s);
+        auto p = pegPrefixExpression(pegSpaces!string());
+        auto r = p(c);
+        assert(r.match);
+        auto nodes = c.getNodes();
+        assert(nodes.length == 1);
+        assert(nodes[0].id == node, nodes[0].id);
+
+        if(child != PegNodeId.None.idup) {
+            assert(nodes[0].children.length == 1);
+            assert(nodes[0].children[0].id == child);
+        }
+    }
+
+    auto nodep = node!("TEST")(new CharParser!(string, 'a'));
+    auto p = choice(
+        seq(nodep, new CharParser!(string, 'b')),
+        nodep
+    );
+
+    testPegPrefix(q{"test"}, PegNodeId.String);
+    testPegPrefix(q{'t' ?}, PegNodeId.Option, PegNodeId.Char);
+    testPegPrefix(q{["test"]*}, PegNodeId.More0, PegNodeId.Set);
+    testPegPrefix(q{['t' .. 's']+}, PegNodeId.More1);
+    testPegPrefix(q{! ['t' .. 's']+}, PegNodeId.Not, PegNodeId.More1);
+    testPegPrefix(q{& .*}, PegNodeId.And, PegNodeId.More0);
 }));
 
 /// main function.
