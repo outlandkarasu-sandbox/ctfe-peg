@@ -150,11 +150,9 @@ public:
     in {
         assert(pos.line >= line_);
         assert(pos.position >= position_);
-        assert(pos.nodeCount >= nodes_.length);
     } out {
         assert(pos.line == line_);
         assert(pos.position == position_);
-        assert(pos.nodeCount == nodes_.length);
     } body {
         source_ = pos.source;
         line_ = pos.line;
@@ -1700,6 +1698,81 @@ static assert(static_test!({
     testPegPrefix(q{['t' .. 's']+}, PegNodeId.More1);
     testPegPrefix(q{! ['t' .. 's']+}, PegNodeId.Not, PegNodeId.More1);
     testPegPrefix(q{& .*}, PegNodeId.And, PegNodeId.More0);
+}));
+
+/// make PEG sequence expression.
+@safe nothrow Parser!R pegSequenceExpression(R)(Parser!R spaces) {
+    auto preExp = pegPrefixExpression(spaces);
+    auto sequence = node!(PegNodeId.Sequence)(
+        seq(preExp, more1(seq(spaces, preExp))));
+    return choice(sequence, preExp);
+}
+
+static assert(static_test!({
+    void testPegSequence(string s, string node, string[] child...) {
+        auto c = makeContext(s);
+        auto p = pegSequenceExpression(pegSpaces!string());
+        auto r = p(c);
+        assert(r.match);
+        auto nodes = c.getNodes();
+        assert(nodes.length == 1);
+        assert(nodes[0].id == node, nodes[0].id);
+
+        assert(nodes[0].children.length == child.length);
+        foreach(i, id; child) {
+            assert(nodes[0].children[i].id == id);
+        }
+    }
+
+    testPegSequence(q{"te"}, PegNodeId.String);
+    testPegSequence(q{"te" "st"},
+        PegNodeId.Sequence, PegNodeId.String, PegNodeId.String);
+    testPegSequence(q{"te"* "st"+},
+        PegNodeId.Sequence, PegNodeId.More0, PegNodeId.More1);
+    testPegSequence(q{&"te"+ !"st"?},
+        PegNodeId.Sequence, PegNodeId.And, PegNodeId.Not);
+}));
+
+/// make PEG choice expression.
+@safe nothrow Parser!R pegChoiceExpression(R)(Parser!R spaces) {
+    auto seqExp = pegSequenceExpression(spaces);
+    auto choiceOp = seq(spaces, new StringParser!(R, "||"), spaces);
+    auto choiceExp = node!(PegNodeId.Choice)(
+        seq(seqExp, more1(seq(choiceOp, seqExp))));
+    return choice(choiceExp, seqExp);
+}
+
+static assert(static_test!({
+    void testPegChoice(string s, string node, string[] child...) {
+        auto c = makeContext(s);
+        auto p = pegChoiceExpression(pegSpaces!string());
+        auto r = p(c);
+        assert(r.match);
+        auto nodes = c.getNodes();
+        assert(nodes.length == 1);
+        assert(nodes[0].id == node, nodes[0].id);
+
+        assert(nodes[0].children.length == child.length);
+        foreach(i, id; child) {
+            assert(nodes[0].children[i].id == id,
+                text("expect:", nodes[0].children[i].id, " but:", id));
+        }
+    }
+
+    testPegChoice(q{"te"}, PegNodeId.String);
+    testPegChoice(q{"te" "st"},
+        PegNodeId.Sequence, PegNodeId.String, PegNodeId.String);
+    testPegChoice(q{"te"* "st"+},
+        PegNodeId.Sequence, PegNodeId.More0, PegNodeId.More1);
+    testPegChoice(q{&"te"+ !"st"?},
+        PegNodeId.Sequence, PegNodeId.And, PegNodeId.Not);
+    testPegChoice(q{&"te"+ !"st"? || !"st"?},
+        PegNodeId.Choice, PegNodeId.Sequence, PegNodeId.Not);
+    testPegChoice(q{&"te"+ !"st"? || 'c' !"st"?},
+        PegNodeId.Choice, PegNodeId.Sequence, PegNodeId.Sequence);
+    testPegChoice(q{&"te"+ !"st"? || 'c' || !"st"?},
+        PegNodeId.Choice,
+        PegNodeId.Sequence, PegNodeId.Char, PegNodeId.Not);
 }));
 
 /// main function.
