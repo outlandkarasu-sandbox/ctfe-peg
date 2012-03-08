@@ -1509,7 +1509,9 @@ enum PegNodeId : string {
     Sequence = "PEG_SEQUENCE",
     Choice = "PEG_CHOICE",
 
-    Rule = "PEG_RULE"
+    Rule = "PEG_RULE",
+
+    Source = "PEG_SOURCE"
 }
 
 /// make PEG identifier parser.
@@ -1819,6 +1821,49 @@ static assert(static_test!({
     testPegRule(q{test = &'c'+ !"test"? || ["abc"]*;},
         "test", PegNodeId.Choice);
     testPegRule(q{test = (&'c'+ !"test"? || ["abc"]*);},
+        "test", PegNodeId.Rule);
+}));
+
+/// make PEG source parser.
+@safe nothrow Parser!R pegSource(R)() {
+    auto spaces = pegSpaces!R();
+    auto rule = pegRuleExpression(spaces);
+    auto eof = new EndParser!R();
+
+    return node!(PegNodeId.Source)(seq(
+        spaces, more0(rule), spaces, eof
+    ));
+}
+
+static assert(static_test!({
+    void testPegSource(string src, string ruleId, string bodyId) {
+        auto c = makeContext(src);
+        auto p = pegSource!string();
+        auto r = p(c);
+        assert(r.match);
+
+        auto nodes = c.getNodes();
+        assert(nodes.length == 1);
+        assert(nodes[0].id == PegNodeId.Source);
+        assert(nodes[0].children.length == 1);
+
+        auto rule = nodes[0].children[0];
+        assert(rule.id == PegNodeId.Rule);
+        assert(rule.children.length == 2);
+        
+        auto ruleName = rule.children[0];
+        assert(ruleName.result.get!string == ruleId);
+        auto bodyNode = rule.children[1];
+        assert(bodyNode.id == bodyId);
+    }
+
+    testPegSource(q{test = 'c';}, "test", PegNodeId.Char);
+    testPegSource(q{test = 'c'*;}, "test", PegNodeId.More0);
+    testPegSource(q{test = !'c'*;}, "test", PegNodeId.Not);
+    testPegSource(q{test = &'c'+ !"test"?;}, "test", PegNodeId.Sequence);
+    testPegSource(q{test = &'c'+ !"test"? || ["abc"]*;},
+        "test", PegNodeId.Choice);
+    testPegSource(q{test = (&'c'+ !"test"? || ["abc"]*);},
         "test", PegNodeId.Rule);
 }));
 
