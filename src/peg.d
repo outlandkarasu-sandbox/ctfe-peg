@@ -1507,7 +1507,9 @@ enum PegNodeId : string {
     More1 = "PEG_ONE_OR_MORE",
 
     Sequence = "PEG_SEQUENCE",
-    Choice = "PEG_CHOICE"
+    Choice = "PEG_CHOICE",
+
+    Rule = "PEG_RULE"
 }
 
 /// make PEG identifier parser.
@@ -1526,7 +1528,7 @@ enum PegNodeId : string {
 }
 
 /// make PEG atomic expressions parser.
-@safe nothrow Parser!R pegAtomicExpression(R)(Parser!R spaces) {
+@safe nothrow Parser!R pegAtomicExpression(R)(Parser!R exp, Parser!R spaces) {
     auto id = pegIdentifier!R();
     auto ch = pegCharLiteral!R();
     auto str = pegStringLiteral!R();
@@ -1536,6 +1538,9 @@ enum PegNodeId : string {
     auto rb = new CharParser!(R, ']');
     auto dotdot = new StringParser!(R, "..");
 
+    auto lp = new CharParser!(R, '(');
+    auto rp = new CharParser!(R, ')');
+
     auto range = node!(PegNodeId.Range)(
         seq(lb, spaces, ch, spaces, dotdot, spaces, ch, spaces, rb)
     );
@@ -1544,12 +1549,16 @@ enum PegNodeId : string {
         seq(lb, spaces, str, spaces, rb)
     );
 
-    return choice(id, ch, str, range, set, any);
+    auto sub = node!(PegNodeId.Rule)(
+        seq(lp, spaces, exp, spaces, rp)
+    );
+
+    return choice(id, ch, str, range, set, sub, any);
 }
 
 static assert(static_test!({
     void testAtomExp(string s, string node) {
-        auto p = pegAtomicExpression(pegSpaces!string());
+        auto p = pegAtomicExpression!string(null, pegSpaces!string());
         auto c = makeContext(s);
         auto r = p(c);
         assert(r.match);
@@ -1560,7 +1569,7 @@ static assert(static_test!({
     }
 
     void testNotAtomExp(string s) {
-        auto p = pegAtomicExpression(pegSpaces!string());
+        auto p = pegAtomicExpression!string(null, pegSpaces!string());
         auto c = makeContext(s);
         auto r = p(c);
         assert(!r.match);
@@ -1586,8 +1595,8 @@ static assert(static_test!({
 }));
 
 /// make PEG unary expression.
-@safe nothrow Parser!R pegUnaryExpression(R)(Parser!R spaces) {
-    auto atom = pegAtomicExpression(spaces);
+@safe nothrow Parser!R pegUnaryExpression(R)(Parser!R exp, Parser!R spaces) {
+    auto atom = pegAtomicExpression(exp, spaces);
 
     auto optOp = new CharParser!(R, '?');
     auto more0Op = new CharParser!(R, '*');
@@ -1603,7 +1612,7 @@ static assert(static_test!({
 static assert(static_test!({
     void testPegUnary(string s, string node, string child = PegNodeId.None) {
         auto c = makeContext(s);
-        auto p = pegUnaryExpression(pegSpaces!string());
+        auto p = pegUnaryExpression!string(null, pegSpaces!string());
         auto r = p(c);
         assert(r.match);
         auto nodes = c.getNodes();
@@ -1658,8 +1667,8 @@ static assert(static_test!({
 }));
 
 /// make PEG prefix expressions.
-@safe nothrow Parser!R pegPrefixExpression(R)(Parser!R spaces) {
-    auto unary = pegUnaryExpression(spaces);
+@safe nothrow Parser!R pegPrefixExpression(R)(Parser!R exp, Parser!R spaces) {
+    auto unary = pegUnaryExpression(exp, spaces);
 
     auto andOp = new CharParser!(R, '&');
     auto notOp = new CharParser!(R, '!');
@@ -1673,7 +1682,7 @@ static assert(static_test!({
 static assert(static_test!({
     void testPegPrefix(string s, string node, string child = PegNodeId.None) {
         auto c = makeContext(s);
-        auto p = pegPrefixExpression(pegSpaces!string());
+        auto p = pegPrefixExpression!string(null, pegSpaces!string());
         auto r = p(c);
         assert(r.match);
         auto nodes = c.getNodes();
@@ -1701,8 +1710,8 @@ static assert(static_test!({
 }));
 
 /// make PEG sequence expression.
-@safe nothrow Parser!R pegSequenceExpression(R)(Parser!R spaces) {
-    auto preExp = pegPrefixExpression(spaces);
+@safe nothrow Parser!R pegSequenceExpression(R)(Parser!R exp, Parser!R spaces) {
+    auto preExp = pegPrefixExpression(exp, spaces);
     auto sequence = node!(PegNodeId.Sequence)(
         seq(preExp, more1(seq(spaces, preExp))));
     return choice(sequence, preExp);
@@ -1711,7 +1720,7 @@ static assert(static_test!({
 static assert(static_test!({
     void testPegSequence(string s, string node, string[] child...) {
         auto c = makeContext(s);
-        auto p = pegSequenceExpression(pegSpaces!string());
+        auto p = pegSequenceExpression!string(null, pegSpaces!string());
         auto r = p(c);
         assert(r.match);
         auto nodes = c.getNodes();
@@ -1734,8 +1743,8 @@ static assert(static_test!({
 }));
 
 /// make PEG choice expression.
-@safe nothrow Parser!R pegChoiceExpression(R)(Parser!R spaces) {
-    auto seqExp = pegSequenceExpression(spaces);
+@safe nothrow Parser!R pegChoiceExpression(R)(Parser!R exp, Parser!R spaces) {
+    auto seqExp = pegSequenceExpression(exp, spaces);
     auto choiceOp = seq(spaces, new StringParser!(R, "||"), spaces);
     auto choiceExp = node!(PegNodeId.Choice)(
         seq(seqExp, more1(seq(choiceOp, seqExp))));
@@ -1745,7 +1754,7 @@ static assert(static_test!({
 static assert(static_test!({
     void testPegChoice(string s, string node, string[] child...) {
         auto c = makeContext(s);
-        auto p = pegChoiceExpression(pegSpaces!string());
+        auto p = pegChoiceExpression!string(null, pegSpaces!string());
         auto r = p(c);
         assert(r.match);
         auto nodes = c.getNodes();
@@ -1773,6 +1782,44 @@ static assert(static_test!({
     testPegChoice(q{&"te"+ !"st"? || 'c' || !"st"?},
         PegNodeId.Choice,
         PegNodeId.Sequence, PegNodeId.Char, PegNodeId.Not);
+}));
+
+/// make PEG rule expression.
+@safe nothrow Parser!R pegRuleExpression(R)(Parser!R spaces) {
+    auto id = pegIdentifier!R();
+    auto op = new CharParser!(R, '=');
+    auto exp = new RuleParser!R;
+    auto ruleBody = pegChoiceExpression!R(exp, spaces);
+    exp.parser = ruleBody;
+    auto eol = new CharParser!(R, ';');
+
+    return node!(PegNodeId.Rule)(seq(
+        id, spaces, op, spaces, ruleBody, spaces, eol));
+}
+
+static assert(static_test!({
+    void testPegRule(string s, string ruleId, string bodyId) {
+        auto c = makeContext(s);
+        auto p = pegRuleExpression(pegSpaces!string());
+        auto r = p(c);
+        assert(r.match);
+
+        auto nodes = c.getNodes();
+        assert(nodes.length == 1);
+        assert(nodes[0].id == PegNodeId.Rule);
+        assert(nodes[0].children.length == 2);
+        assert(nodes[0].children[0].id == PegNodeId.Id);
+        assert(nodes[0].children[1].id == bodyId);
+    }
+
+    testPegRule(q{test = 'c';}, "test", PegNodeId.Char);
+    testPegRule(q{test = 'c'*;}, "test", PegNodeId.More0);
+    testPegRule(q{test = !'c'*;}, "test", PegNodeId.Not);
+    testPegRule(q{test = &'c'+ !"test"?;}, "test", PegNodeId.Sequence);
+    testPegRule(q{test = &'c'+ !"test"? || ["abc"]*;},
+        "test", PegNodeId.Choice);
+    testPegRule(q{test = (&'c'+ !"test"? || ["abc"]*);},
+        "test", PegNodeId.Rule);
 }));
 
 /// main function.
